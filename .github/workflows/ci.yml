@@ -1,0 +1,97 @@
+name: CI - validate, lint & plan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "apps/**"
+      - "gitops/**"
+      - "app-static/**"
+      - ".github/**"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT: platlab
+
+jobs:
+  validate:
+    name: fmt, validate, tflint, checkov, helm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.2"
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive terraform/
+
+      - name: validate all layers + bootstrap (no backend)
+        run: |
+          for d in terraform/bootstrap terraform/layers/*/; do
+            echo "== $d"
+            terraform -chdir="$d" init -backend=false -input=false >/dev/null
+            terraform -chdir="$d" validate
+          done
+
+      - name: tflint
+        uses: terraform-linters/setup-tflint@v4
+      - run: |
+          tflint --init
+          for d in terraform/layers/*/ terraform/modules/*/; do
+            echo "== $d"; tflint --chdir="$d" || exit 1
+          done
+
+      - name: checkov (IaC security scan)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          quiet: true
+          # Lab accepts some findings on purpose (public static bucket, no WAF...).
+          # Tightening this to hard-fail is an exercise in docs/BREAK-IT-LAB.md.
+          soft_fail: true
+
+      - name: helm lint + render check
+        run: |
+          helm lint apps/webapp -f apps/webapp/values.yaml
+          for e in dev qa prod; do
+            helm template webapp apps/webapp \
+              -f apps/webapp/values.yaml -f apps/webapp/values-$e.yaml >/dev/null
+            echo "render OK: $e"
+          done
+
+  plan:
+    name: plan (${{ matrix.environment }}/${{ matrix.layer }})
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, qa, prod]
+        layer: [network, platform, data, observability]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.2"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/tf-layer
+        with:
+          environment: ${{ matrix.environment }}
+          layer: ${{ matrix.layer }}
+          command: plan

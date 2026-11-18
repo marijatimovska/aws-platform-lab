@@ -1,0 +1,62 @@
+name: terraform layer
+description: Init the right backend and run terraform for one env+layer.
+
+inputs:
+  environment:
+    required: true
+  layer:
+    description: network | platform | data | observability
+    required: true
+  command:
+    description: plan | apply
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: terraform ${{ inputs.command }} (${{ inputs.environment }}/${{ inputs.layer }})
+      shell: bash
+      run: |
+        case "${{ inputs.layer }}" in
+          network)       DIR=10-network ;;
+          platform)      DIR=20-platform ;;
+          data)          DIR=30-data ;;
+          observability) DIR=40-observability ;;
+          *) echo "unknown layer"; exit 1 ;;
+        esac
+        cd "terraform/layers/$DIR"
+
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        terraform init -input=false \
+          -backend-config="bucket=${PROJECT}-tfstate-${ACCOUNT_ID}" \
+          -backend-config="key=env/${{ inputs.environment }}/${{ inputs.layer }}.tfstate" \
+          -backend-config="region=${AWS_REGION}"
+
+        ARGS=(-input=false
+          -var-file="../../environments/${{ inputs.environment }}/${{ inputs.layer }}.tfvars"
+          -var "environment=${{ inputs.environment }}"
+          -var "project=${PROJECT}"
+          -var "region=${AWS_REGION}")
+
+        if [ "${{ inputs.command }}" = "apply" ]; then
+          terraform apply -auto-approve "${ARGS[@]}"
+        else
+          set +e
+          terraform plan -no-color "${ARGS[@]}" > plan.txt 2>&1
+          CODE=$?
+          set -e
+          cat plan.txt
+          # With the destroy-daily routine, upstream layers are often empty, so
+          # terraform_remote_state has no outputs. That's "not deployed", not a failure.
+          if [ "$CODE" != "0" ] && grep -q "does not have an attribute named" plan.txt; then
+            echo "## Plan: ${{ inputs.environment }} / ${{ inputs.layer }} - skipped (upstream layer not deployed)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Plan: ${{ inputs.environment }} / ${{ inputs.layer }}"
+            echo '```'
+            tail -n 30 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$CODE"
+        fi

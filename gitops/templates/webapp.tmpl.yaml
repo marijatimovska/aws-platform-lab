@@ -1,0 +1,39 @@
+# The application itself: ArgoCD renders the Helm chart from THIS repository.
+# Deploying a change = merging a commit; rollback = git revert.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: webapp
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: __REPO_URL__
+    targetRevision: main
+    path: apps/webapp
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-__ENV__.yaml
+      parameters:
+        - name: serviceAccount.roleArn
+          value: __WEBAPP_ROLE_ARN__
+        - name: staticSiteUrl
+          value: __STATIC_URL__
+        - name: database.secretName
+          value: webapp-db
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

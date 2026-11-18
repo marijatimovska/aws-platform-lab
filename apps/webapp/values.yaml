@@ -1,0 +1,45 @@
+# Default values - per-environment overrides live in values-<env>.yaml.
+
+environment: dev
+
+image:
+  repository: nginx
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+service:
+  # Must match var.app_node_port in Terraform - the ALB target group forwards here.
+  nodePort: 30080
+
+serviceAccount:
+  name: webapp
+  # IRSA role ARN, set at deploy time: --set serviceAccount.roleArn=$(terraform output ...)
+  roleArn: ""
+
+# Shown as a link on the page.
+staticSiteUrl: ""
+
+database:
+  # Name of the k8s Secret created by External Secrets from Secrets Manager.
+  # "" disables the DB env vars (chart works without the data layer / ESO).
+  secretName: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 300m
+    memory: 128Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  # Pod-level scale-out trigger. Scale-IN is governed by the stabilization window
+  # below (Kubernetes HPA has one target, not separate out/in thresholds like an
+  # ASG - the 300s window plays the role of the "40%" hysteresis).
+  targetCPUUtilizationPercentage: 70
+  scaleDownStabilizationSeconds: 300

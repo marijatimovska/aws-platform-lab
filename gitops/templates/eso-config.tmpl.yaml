@@ -1,0 +1,29 @@
+# Raw-manifest Application: the SecretStore + ExternalSecret that pull the RDS
+# connection secret into the default namespace as k8s Secret "webapp-db".
+# sync-wave 1: applied after the ESO chart (wave 0) has installed the CRDs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: eso-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: __REPO_URL__
+    targetRevision: main
+    path: gitops/clusters/__ENV__/eso-config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 10
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m

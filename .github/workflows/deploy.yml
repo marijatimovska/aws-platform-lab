@@ -1,0 +1,137 @@
+name: Deploy - layers in order, dev -> qa -> prod
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "app-static/**"
+      - ".github/**"
+      # NOTE: apps/** and gitops/** are deliberately absent - ArgoCD deploys those
+      # by watching git. The pipeline only owns infrastructure + static content.
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Deploy up to which environment"
+        type: choice
+        default: dev
+        options: [dev, qa, prod]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT: platlab
+
+jobs:
+  deploy-dev:
+    name: deploy dev
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.2"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/tf-layer
+        with: { environment: dev, layer: network, command: apply }
+      - uses: ./.github/actions/tf-layer
+        with: { environment: dev, layer: platform, command: apply }
+      - uses: ./.github/actions/tf-layer
+        with: { environment: dev, layer: data, command: apply }
+      - uses: ./.github/actions/tf-layer
+        with: { environment: dev, layer: observability, command: apply }
+      - uses: ./.github/actions/argocd-bootstrap
+        with: { environment: dev }
+      - name: sync static content
+        run: |
+          cd terraform/layers/30-data
+          BUCKET=$(terraform output -raw static_bucket)
+          aws s3 sync ../../../app-static/ "s3://${BUCKET}/" --delete
+      - name: summary
+        run: |
+          cd terraform/layers/20-platform
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          terraform init -input=false \
+            -backend-config="bucket=${PROJECT}-tfstate-${ACCOUNT_ID}" \
+            -backend-config="key=env/dev/platform.tfstate" \
+            -backend-config="region=${AWS_REGION}" >/dev/null
+          echo "## dev deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- App: $(terraform output -raw app_url)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- In-cluster workloads: synced by ArgoCD from gitops/clusters/dev" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-qa:
+    name: deploy qa
+    needs: deploy-dev
+    # Push to main deploys dev only. qa/prod are promoted on purpose via
+    # "Run workflow" - an EKS env costs ~$0.25/hr, so nothing spins up by accident.
+    if: inputs.target == 'qa' || inputs.target == 'prod'
+    runs-on: ubuntu-latest
+    environment: qa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.2"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/tf-layer
+        with: { environment: qa, layer: network, command: apply }
+      - uses: ./.github/actions/tf-layer
+        with: { environment: qa, layer: platform, command: apply }
+      - uses: ./.github/actions/tf-layer
+        with: { environment: qa, layer: data, command: apply }
+      - uses: ./.github/actions/tf-layer
+        with: { environment: qa, layer: observability, command: apply }
+      - uses: ./.github/actions/argocd-bootstrap
+        with: { environment: qa }
+      - name: sync static content
+        run: |
+          cd terraform/layers/30-data
+          BUCKET=$(terraform output -raw static_bucket)
+          aws s3 sync ../../../app-static/ "s3://${BUCKET}/" --delete
+
+  deploy-prod:
+    name: deploy prod (requires approval)
+    needs: deploy-qa
+    if: inputs.target == 'prod'
+    runs-on: ubuntu-latest
+    # Set "Required reviewers" on the prod environment in GitHub for the approval gate.
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.2"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/tf-layer
+        with: { environment: prod, layer: network, command: apply }
+      - uses: ./.github/actions/tf-layer
+        with: { environment: prod, layer: platform, command: apply }
+      - uses: ./.github/actions/tf-layer
+        with: { environment: prod, layer: data, command: apply }
+      - uses: ./.github/actions/tf-layer
+        with: { environment: prod, layer: observability, command: apply }
+      - uses: ./.github/actions/argocd-bootstrap
+        with: { environment: prod }
+      - name: sync static content
+        run: |
+          cd terraform/layers/30-data
+          BUCKET=$(terraform output -raw static_bucket)
+          aws s3 sync ../../../app-static/ "s3://${BUCKET}/" --delete

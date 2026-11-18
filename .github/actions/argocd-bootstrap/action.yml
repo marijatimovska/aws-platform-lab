@@ -1,0 +1,28 @@
+name: argocd bootstrap
+description: Install ArgoCD and apply the root app-of-apps, if gitops for this env has been rendered. Idempotent.
+
+inputs:
+  environment:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: install ArgoCD + root app (${{ inputs.environment }})
+      shell: bash
+      run: |
+        ROOT_APP="gitops/clusters/${{ inputs.environment }}/root.yaml"
+        if [ ! -f "$ROOT_APP" ]; then
+          echo "## ${{ inputs.environment }}: gitops not rendered yet - run scripts/render-gitops.sh and commit" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        CLUSTER="${PROJECT}-${{ inputs.environment }}-eks"
+        aws eks update-kubeconfig --name "$CLUSTER" --region "$AWS_REGION"
+        helm repo add argo https://argoproj.github.io/argo-helm
+        helm repo update argo
+        helm upgrade --install argocd argo/argo-cd \
+          --namespace argocd --create-namespace \
+          -f gitops/bootstrap/argocd-values.yaml \
+          --wait --timeout 10m
+        kubectl apply -f "$ROOT_APP"
+        echo "## ${{ inputs.environment }}: ArgoCD reconciling gitops/clusters/${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"

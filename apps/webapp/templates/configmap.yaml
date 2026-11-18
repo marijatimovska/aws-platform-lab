@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapp-nginx
+  labels:
+    {{- include "webapp.labels" . | nindent 4 }}
+data:
+  # The official nginx image runs envsubst on /etc/nginx/templates/*.template at
+  # startup, so $POD_NAME / $NODE_NAME / $POD_IP below are replaced with the real
+  # values injected via the Downward API in the Deployment.
+  default.conf.template: |
+    server {
+      listen 80;
+
+      location = /health {
+        add_header Content-Type text/plain;
+        return 200 'ok';
+      }
+
+      location / {
+        add_header Content-Type text/html;
+        return 200 '<!DOCTYPE html>
+    <html><head><meta charset="utf-8"><title>platlab · ${ENVIRONMENT}</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0;
+             display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+      .card { background: #1e293b; padding: 2.5rem 3rem; border-radius: 12px; max-width: 580px; }
+      h1 { margin-top: 0; font-size: 1.4rem; }
+      .env { color: #38bdf8; text-transform: uppercase; letter-spacing: 2px; font-size: .8rem; }
+      code { background: #0f172a; padding: 2px 8px; border-radius: 6px; color: #7dd3fc; }
+      td { padding: 4px 12px 4px 0; }
+      a { color: #38bdf8; }
+      .hint { color: #94a3b8; font-size: .85rem; margin-top: 1.2rem; }
+    </style></head>
+    <body><div class="card">
+      <div class="env">${ENVIRONMENT} · Kubernetes on EKS</div>
+      <h1>Served by a pod on a private EKS worker node</h1>
+      <table>
+        <tr><td>Pod</td><td><code>${POD_NAME}</code></td></tr>
+        <tr><td>Node</td><td><code>${NODE_NAME}</code></td></tr>
+        <tr><td>Pod IP</td><td><code>${POD_IP}</code></td></tr>
+        <tr><td>Database</td><td><code>${DB_NAME} @ ${DB_HOST}</code></td></tr>
+      </table>
+      <p class="hint">Refresh a few times: the pod and node change as the ALB and
+      kube-proxy spread requests across availability zones.</p>
+      <p class="hint">Static content on S3: <a href="${STATIC_SITE_URL}">${STATIC_SITE_URL}</a></p>
+      <p class="hint">The database row is populated from a Kubernetes Secret that
+      External Secrets Operator synced out of AWS Secrets Manager - no credential
+      ever touches git.</p>
+    </div></body></html>';
+      }
+    }

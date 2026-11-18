@@ -1,0 +1,71 @@
+name: Drift detection
+
+# Run on demand. A cron (e.g. every morning) is standard in production - here it's
+# commented out because with the destroy-daily cost routine, a destroyed environment
+# would "drift" by definition and page you for nothing. Enable it when an env stays up.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        default: dev
+        options: [dev, qa, prod]
+  # schedule:
+  #   - cron: "17 6 * * 1-5"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT: platlab
+
+jobs:
+  drift:
+    name: drift check (${{ inputs.environment || 'dev' }}/${{ matrix.layer }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: [network, platform, data, observability]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.2"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: plan -detailed-exitcode
+        run: |
+          ENV="${{ inputs.environment || 'dev' }}"
+          case "${{ matrix.layer }}" in
+            network) DIR=10-network ;; platform) DIR=20-platform ;;
+            data) DIR=30-data ;; observability) DIR=40-observability ;;
+          esac
+          cd "terraform/layers/$DIR"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          terraform init -input=false \
+            -backend-config="bucket=${PROJECT}-tfstate-${ACCOUNT_ID}" \
+            -backend-config="key=env/$ENV/${{ matrix.layer }}.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+          set +e
+          terraform plan -no-color -detailed-exitcode \
+            -var-file="../../environments/$ENV/${{ matrix.layer }}.tfvars" \
+            -var "environment=$ENV" -var "project=${PROJECT}" -var "region=${AWS_REGION}" \
+            > plan.txt 2>&1
+          CODE=$?
+          set -e
+          if [ "$CODE" = "2" ]; then
+            echo "## DRIFT in $ENV/${{ matrix.layer }}" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"; tail -n 40 plan.txt >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Drift detected in $ENV/${{ matrix.layer }}"
+            exit 1
+          elif [ "$CODE" != "0" ]; then
+            echo "plan failed:"; cat plan.txt; exit 1
+          else
+            echo "no drift in $ENV/${{ matrix.layer }}"
+          fi

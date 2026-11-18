@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp
+  labels:
+    {{- include "webapp.labels" . | nindent 4 }}
+spec:
+  # NodePort on every worker; the Terraform-owned ALB target group forwards to it.
+  type: NodePort
+  selector:
+    {{- include "webapp.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: {{ .Values.service.nodePort }}

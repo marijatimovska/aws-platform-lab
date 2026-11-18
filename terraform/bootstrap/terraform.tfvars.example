@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and edit before running bootstrap.
+github_repo = "YOUR_GITHUB_USERNAME/aws-platform-lab"
+
+# alert_email                 = "marijatimovska@gmail.com"
+# create_github_oidc_provider = true   # set false if the provider already exists in your account
+# monthly_budget_usd          = 30
+# daily_budget_usd            = 5
